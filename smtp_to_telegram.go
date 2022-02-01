@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"mime"
-	"mime/multipart"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,11 +21,13 @@ import (
 	"github.com/flashmob/go-guerrilla/mail"
 	"github.com/jhillyerd/enmime"
 	"github.com/urfave/cli/v2"
+	tb "gopkg.in/telebot.v3"
 )
 
 var (
 	Version string = "UNKNOWN_RELEASE"
 	logger  log.Logger
+	bot     tb.Bot
 )
 
 const (
@@ -39,7 +38,6 @@ type SmtpConfig struct {
 	smtpListen          string
 	smtpPrimaryHost     string
 	smtpMaxEnvelopeSize int64
-	logLevel            string
 }
 
 type TelegramConfig struct {
@@ -52,6 +50,7 @@ type TelegramConfig struct {
 	forwardedAttachmentMaxPhotoSize  int
 	forwardedAttachmentRespectErrors bool
 	messageLengthToSendAsFile        uint
+	messageCompact                   bool
 }
 
 type TelegramAPIMessageResult struct {
@@ -65,8 +64,9 @@ type TelegramAPIMessage struct {
 }
 
 type FormattedEmail struct {
-	text        string
-	attachments []*FormattedAttachment
+	text                 string
+	attachments          []*FormattedAttachment
+	attachmentsAreImages bool
 }
 
 const (
@@ -92,7 +92,7 @@ func GetHostname() string {
 func main() {
 	app := cli.NewApp()
 	app.Name = "smtp_to_telegram"
-	app.Usage = "A simple program that listens for SMTP and forwards " +
+	app.Usage = "A small program which listens for SMTP and sends " +
 		"all incoming Email messages to Telegram."
 	app.Version = Version
 	app.Action = func(c *cli.Context) error {
@@ -105,7 +105,6 @@ func main() {
 			smtpListen:          c.String("smtp-listen"),
 			smtpPrimaryHost:     c.String("smtp-primary-host"),
 			smtpMaxEnvelopeSize: smtpMaxEnvelopeSize,
-			logLevel:            c.String("log-level"),
 		}
 		forwardedAttachmentMaxSize, err := units.FromHumanSize(c.String("forwarded-attachment-max-size"))
 		if err != nil {
@@ -127,7 +126,9 @@ func main() {
 			forwardedAttachmentMaxPhotoSize:  int(forwardedAttachmentMaxPhotoSize),
 			forwardedAttachmentRespectErrors: c.Bool("forwarded-attachment-respect-errors"),
 			messageLengthToSendAsFile:        c.Uint("message-length-to-send-as-file"),
+			messageCompact:                   c.Bool("compact-messages"),
 		}
+
 		d, err := SmtpStart(smtpConfig, telegramConfig)
 		if err != nil {
 			panic(fmt.Sprintf("start error: %s", err))
@@ -216,11 +217,11 @@ func main() {
 			Value:   4095,
 			EnvVars: []string{"ST_MESSAGE_LENGTH_TO_SEND_AS_FILE"},
 		},
-		&cli.StringFlag{
-			Name:    "log-level",
-			Usage:   "Logging level (info, debug, error, panic).",
-			Value:   "info",
-			EnvVars: []string{"ST_LOG_LEVEL"},
+		&cli.BoolFlag{
+			Name:    "compact-messages",
+			Usage:   "Attempt to send albums whenever possible ",
+			Value:   true,
+			EnvVars: []string{"ST_COMPACT_MESSAGES"},
 		},
 	}
 	err := app.Run(os.Args)
@@ -233,7 +234,7 @@ func main() {
 func SmtpStart(
 	smtpConfig *SmtpConfig, telegramConfig *TelegramConfig) (guerrilla.Daemon, error) {
 
-	cfg := &guerrilla.AppConfig{LogFile: log.OutputStdout.String(), LogLevel: smtpConfig.logLevel}
+	cfg := &guerrilla.AppConfig{LogFile: log.OutputStdout.String()}
 
 	cfg.AllowedHosts = []string{"."}
 
@@ -249,7 +250,6 @@ func SmtpStart(
 		"save_process":       "HeadersParser|Header|Hasher|TelegramBot",
 		"log_received_mails": true,
 		"primary_mail_host":  smtpConfig.smtpPrimaryHost,
-		"gw_save_timeout":    "600s", // Needs to be greater than ST_TELEGRAM_API_TIMEOUT_SECONDS
 	}
 	cfg.BackendConfig = bcfg
 
@@ -258,7 +258,17 @@ func SmtpStart(
 
 	logger = daemon.Log()
 
-	err := daemon.Start()
+	pref := tb.Settings{
+		Token: telegramConfig.telegramBotToken,
+	}
+
+	teleBot, err := tb.NewBot(pref)
+	if err != nil {
+		logger.Fatal(err)
+	}
+	bot = *teleBot
+
+	err = daemon.Start()
 	return daemon, err
 }
 
@@ -273,7 +283,7 @@ func TelegramBotProcessorFactory(
 					if task == backends.TaskSaveMail {
 						err := SendEmailToTelegram(e, telegramConfig)
 						if err != nil {
-							return backends.NewResult(fmt.Sprintf("421 Error: %s", err)), err
+							return backends.NewResult(fmt.Sprintf("554 Error: %s", err)), err
 						}
 						return p.Process(e, task)
 					}
@@ -291,26 +301,47 @@ func SendEmailToTelegram(e *mail.Envelope,
 	if err != nil {
 		return err
 	}
+	sendAlbum := telegramConfig.messageCompact && message.attachmentsAreImages && len(message.attachments) >= 2 && len(message.attachments) <= 10
 
-	client := http.Client{
-		Timeout: time.Duration(telegramConfig.telegramApiTimeoutSeconds*1000) * time.Millisecond,
+	album := tb.Album{}
+
+	if sendAlbum {
+		// Send images as album
+		// TODO: more than 10 images should be split up into multiple albums
+		album = append(album,
+			// First item's caption will render as the message text
+			&tb.Photo{Caption: message.text, File: tb.FromReader(bytes.NewReader(message.attachments[0].content))},
+		)
+		for i := 1; i < len(message.attachments); i++ {
+			album = append(album,
+				&tb.Photo{File: tb.FromReader(bytes.NewReader(message.attachments[i].content))},
+			)
+		}
 	}
 
-	for _, chatId := range strings.Split(telegramConfig.telegramChatIds, ",") {
-		sentMessage, err := SendMessageToChat(message, chatId, telegramConfig, &client)
-		if err != nil {
-			// If unable to send at least one message -- reject the whole email.
-			return errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
-		}
-
-		for _, attachment := range message.attachments {
-			err = SendAttachmentToChat(attachment, chatId, telegramConfig, &client, sentMessage)
+	for _, chatIdStr := range strings.Split(telegramConfig.telegramChatIds, ",") {
+		chatId, _ := strconv.ParseInt(chatIdStr, 10, 64)
+		if sendAlbum {
+			_, err := bot.SendAlbum(tb.ChatID(chatId), album)
 			if err != nil {
-				err = errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
-				if telegramConfig.forwardedAttachmentRespectErrors {
-					return err
-				} else {
-					logger.Errorf("Ignoring attachment sending error: %s", err)
+				return errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
+			}
+		} else {
+			sentMessage, err := SendMessageToChat(message, chatId, telegramConfig)
+			if err != nil {
+				// If unable to send at least one message -- reject the whole email.
+				return errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
+			}
+
+			for _, attachment := range message.attachments {
+				err = SendAttachmentToChat(attachment, chatId, telegramConfig, sentMessage)
+				if err != nil {
+					err = errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
+					if telegramConfig.forwardedAttachmentRespectErrors {
+						return err
+					} else {
+						logger.Errorf("Ignoring attachment sending error: %s", err)
+					}
 				}
 			}
 		}
@@ -320,113 +351,30 @@ func SendEmailToTelegram(e *mail.Envelope,
 
 func SendMessageToChat(
 	message *FormattedEmail,
-	chatId string,
+	chatId int64,
 	telegramConfig *TelegramConfig,
-	client *http.Client,
-) (*TelegramAPIMessage, error) {
-	// The native golang's http client supports
-	// http, https and socks5 proxies via HTTP_PROXY/HTTPS_PROXY env vars
-	// out of the box.
-	//
-	// See: https://golang.org/pkg/net/http/#ProxyFromEnvironment
-	resp, err := client.PostForm(
-		// https://core.telegram.org/bots/api#sendmessage
-		fmt.Sprintf(
-			"%sbot%s/sendMessage?disable_web_page_preview=true",
-			telegramConfig.telegramApiPrefix,
-			telegramConfig.telegramBotToken,
-		),
-		url.Values{"chat_id": {chatId}, "text": {message.text}},
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return nil, errors.New(fmt.Sprintf(
-			"Non-200 response from Telegram: (%d) %s",
-			resp.StatusCode,
-			EscapeMultiLine(body),
-		))
-	}
-
-	j, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("Error reading json body of sendMessage: %v", err)
-	}
-	result := &TelegramAPIMessageResult{}
-	err = json.Unmarshal(j, result)
-	if err != nil {
-		return nil, fmt.Errorf("Error parsing json body of sendMessage: %v", err)
-	}
-	if result.Ok != true {
-		return nil, fmt.Errorf("ok != true: %s", j)
-	}
-	return result.Result, nil
+) (*tb.Message, error) {
+	msg, err := bot.Send(tb.ChatID(chatId), message.text)
+	return msg, err
 }
 
 func SendAttachmentToChat(
 	attachment *FormattedAttachment,
-	chatId string,
+	chatId int64,
 	telegramConfig *TelegramConfig,
-	client *http.Client,
-	sentMessage *TelegramAPIMessage,
+	sentMessage *tb.Message,
 ) error {
-	buf := new(bytes.Buffer)
-	w := multipart.NewWriter(buf)
-	var method string
-	// https://core.telegram.org/bots/api#sending-files
+	var tbAttachment interface{}
 	if attachment.fileType == ATTACHMENT_TYPE_DOCUMENT {
-		// https://core.telegram.org/bots/api#senddocument
-		method = "sendDocument"
-		panicIfError(w.WriteField("chat_id", chatId))
-		panicIfError(w.WriteField("reply_to_message_id", fmt.Sprintf("%s", sentMessage.MessageId)))
-		panicIfError(w.WriteField("caption", attachment.caption))
-		// TODO maybe reuse files sent to multiple chats via file_id?
-		dw, err := w.CreateFormFile("document", attachment.filename)
-		panicIfError(err)
-		_, err = dw.Write(attachment.content)
-		panicIfError(err)
+		tbAttachment = &tb.Document{Caption: attachment.caption, File: tb.FromReader(bytes.NewReader(attachment.content))}
 	} else if attachment.fileType == ATTACHMENT_TYPE_PHOTO {
-		// https://core.telegram.org/bots/api#sendphoto
-		method = "sendPhoto"
-		panicIfError(w.WriteField("chat_id", chatId))
-		panicIfError(w.WriteField("reply_to_message_id", fmt.Sprintf("%s", sentMessage.MessageId)))
-		panicIfError(w.WriteField("caption", attachment.caption))
-		// TODO maybe reuse files sent to multiple chats via file_id?
-		dw, err := w.CreateFormFile("photo", attachment.filename)
-		panicIfError(err)
-		_, err = dw.Write(attachment.content)
-		panicIfError(err)
+		tbAttachment = &tb.Photo{Caption: attachment.caption, File: tb.FromReader(bytes.NewReader(attachment.content))}
 	} else {
 		panic(fmt.Errorf("Unknown file type %d", attachment.fileType))
 	}
-	w.Close()
 
-	resp, err := client.Post(
-		fmt.Sprintf(
-			"%sbot%s/%s?disable_notification=true",
-			telegramConfig.telegramApiPrefix,
-			telegramConfig.telegramBotToken,
-			method,
-		),
-		w.FormDataContentType(),
-		buf,
-	)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return errors.New(fmt.Sprintf(
-			"Non-200 response from Telegram: (%d) %s",
-			resp.StatusCode,
-			EscapeMultiLine(body),
-		))
-	}
-	return nil
+	_, err := bot.Send(tb.ChatID(chatId), tbAttachment, &tb.SendOptions{ReplyTo: sentMessage, DisableNotification: true})
+	return err
 }
 
 func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEmail, error) {
@@ -439,6 +387,7 @@ func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEm
 
 	attachmentsDetails := []string{}
 	attachments := []*FormattedAttachment{}
+	attachmentsAreImages := true
 
 	doParts := func(emoji string, parts []*enmime.Part) {
 		for _, part := range parts {
@@ -461,6 +410,7 @@ func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEm
 				})
 			} else {
 				if len(part.Content) <= telegramConfig.forwardedAttachmentMaxSize {
+					attachmentsAreImages = false
 					action = "sending..."
 					attachments = append(attachments, &FormattedAttachment{
 						filename: part.FileName,
@@ -518,8 +468,9 @@ func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEm
 	)
 	if truncatedMessageText == "" { // no need to truncate
 		return &FormattedEmail{
-			text:        fullMessageText,
-			attachments: attachments,
+			text:                 fullMessageText,
+			attachments:          attachments,
+			attachmentsAreImages: attachmentsAreImages,
 		}, nil
 	} else {
 		if len(fullMessageText) > telegramConfig.forwardedAttachmentMaxSize {
@@ -537,8 +488,9 @@ func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEm
 		}
 		attachments := append([]*FormattedAttachment{at}, attachments...)
 		return &FormattedEmail{
-			text:        truncatedMessageText,
-			attachments: attachments,
+			text:                 truncatedMessageText,
+			attachments:          attachments,
+			attachmentsAreImages: attachmentsAreImages,
 		}, nil
 	}
 }

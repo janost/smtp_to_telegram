@@ -9,6 +9,7 @@ require (
 	github.com/stretchr/testify v1.8.4
 	github.com/urfave/cli/v2 v2.27.7
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
+	gopkg.in/telebot.v3 v3.0.0-20220130115853-f0291132d3c3
 )
 
 require (
