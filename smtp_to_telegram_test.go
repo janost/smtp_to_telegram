@@ -45,9 +45,20 @@ func makeTelegramConfig() *TelegramConfig {
 }
 
 func startSmtp(smtpConfig *SmtpConfig, telegramConfig *TelegramConfig) guerrilla.Daemon {
-	d, err := SmtpStart(smtpConfig, telegramConfig)
+	var d guerrilla.Daemon
+	var err error
+	// Retry a few times to handle race condition where HTTP server isn't ready yet
+	for i := 0; i < 10; i++ {
+		d, err = SmtpStart(smtpConfig, telegramConfig)
+		if err == nil {
+			break
+		}
+		if i < 9 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	if err != nil {
-		panic(fmt.Sprintf("start error: %s", err))
+		panic(fmt.Sprintf("start error after retries: %s", err))
 	}
 	waitSmtp(smtpConfig.smtpListen)
 	return d
