@@ -297,12 +297,15 @@ func SmtpStart(
 
 	teleBot, err := tb.NewBot(pref)
 	if err != nil {
-		logger.Fatal(err)
+		return guerrilla.Daemon{}, fmt.Errorf("failed to create telegram bot: %w", err)
 	}
 	bot = teleBot
 
 	err = daemon.Start()
-	return daemon, err
+	if err != nil {
+		return guerrilla.Daemon{}, fmt.Errorf("failed to start SMTP daemon: %w", err)
+	}
+	return daemon, nil
 }
 
 func TelegramBotProcessorFactory(
