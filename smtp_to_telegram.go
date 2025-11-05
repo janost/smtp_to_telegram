@@ -283,6 +283,16 @@ func SmtpStart(
 	pref := tb.Settings{
 		Token: telegramConfig.telegramBotToken,
 	}
+	// Use custom API URL if specified (for testing)
+	// Note: telebot constructs URLs as: URL + "/bot" + Token + "/" + Method
+	if telegramConfig.telegramApiPrefix != "" && telegramConfig.telegramApiPrefix != "https://api.telegram.org/" {
+		// Remove trailing slash if present
+		apiURL := telegramConfig.telegramApiPrefix
+		if strings.HasSuffix(apiURL, "/") {
+			apiURL = apiURL[:len(apiURL)-1]
+		}
+		pref.URL = apiURL
+	}
 
 	teleBot, err := tb.NewBot(pref)
 	if err != nil {

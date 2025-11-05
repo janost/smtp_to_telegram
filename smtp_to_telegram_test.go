@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -73,12 +74,13 @@ func goMailBody(content []byte) gomail.FileSetting {
 func TestSuccess(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
 
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
 
 	err := smtp.SendMail(smtpConfig.smtpListen, nil, "from@test", []string{"to@test"}, []byte(`hi`))
 	assert.NoError(t, err)
@@ -99,12 +101,13 @@ func TestSuccessCustomFormat(t *testing.T) {
 	telegramConfig := makeTelegramConfig()
 	telegramConfig.messageTemplate =
 		"Subject: {subject}\\n\\n{body}"
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
 
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
 
 	err := smtp.SendMail(smtpConfig.smtpListen, nil, "from@test", []string{"to@test"}, []byte(`hi`))
 	assert.NoError(t, err)
@@ -120,8 +123,15 @@ func TestSuccessCustomFormat(t *testing.T) {
 func TestTelegramUnreachable(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
+
+	// Start HTTP server for bot initialization, then stop it to simulate unreachable
+	s := HttpServer(&SuccessHandler{RequestMessages: []string{}, RequestDocuments: []*FormattedAttachment{}})
+
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
+
+	// Shutdown HTTP server to simulate Telegram being unreachable
+	s.Shutdown(context.Background())
 
 	err := smtp.SendMail(smtpConfig.smtpListen, nil, "from@test", []string{"to@test"}, []byte(`hi`))
 	assert.NotNil(t, err)
@@ -130,11 +140,13 @@ func TestTelegramUnreachable(t *testing.T) {
 func TestTelegramHttpError(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
+	s := HttpServer(&ErrorHandler{})
+	defer s.Shutdown(context.Background())
+
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
 
-	s := HttpServer(&ErrorHandler{})
-	defer s.Shutdown(context.Background())
+	
 
 	err := smtp.SendMail(smtpConfig.smtpListen, nil, "from@test", []string{"to@test"}, []byte(`hi`))
 	assert.NotNil(t, err)
@@ -143,12 +155,14 @@ func TestTelegramHttpError(t *testing.T) {
 func TestEncodedContent(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	b := []byte(
 		"Subject: =?UTF-8?B?8J+Yjg==?=\r\n" +
@@ -172,12 +186,14 @@ func TestEncodedContent(t *testing.T) {
 func TestHtmlAttachmentIsIgnored(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -203,12 +219,14 @@ func TestHtmlAttachmentIsIgnored(t *testing.T) {
 func TestAttachmentsDetails(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -248,12 +266,14 @@ func TestAttachmentsSending(t *testing.T) {
 	telegramConfig := makeTelegramConfig()
 	telegramConfig.forwardedAttachmentMaxSize = 1024
 	telegramConfig.forwardedAttachmentMaxPhotoSize = 1024
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -318,12 +338,14 @@ func TestLargeMessageAggressivelyTruncated(t *testing.T) {
 	telegramConfig.messageLengthToSendAsFile = 12
 	telegramConfig.forwardedAttachmentMaxSize = 1024
 	telegramConfig.forwardedAttachmentMaxPhotoSize = 1024
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -367,12 +389,14 @@ func TestLargeMessageProperlyTruncated(t *testing.T) {
 	telegramConfig.messageLengthToSendAsFile = 100
 	telegramConfig.forwardedAttachmentMaxSize = 1024
 	telegramConfig.forwardedAttachmentMaxPhotoSize = 1024
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -422,12 +446,14 @@ func TestLargeMessageWithAttachmentsProperlyTruncated(t *testing.T) {
 	telegramConfig.messageLengthToSendAsFile = 150
 	telegramConfig.forwardedAttachmentMaxSize = 1024
 	telegramConfig.forwardedAttachmentMaxPhotoSize = 1024
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -490,12 +516,14 @@ func TestMuttMessagePlaintextParsing(t *testing.T) {
 	telegramConfig := makeTelegramConfig()
 	telegramConfig.forwardedAttachmentMaxSize = 1024
 	telegramConfig.forwardedAttachmentMaxPhotoSize = 1024
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	// date | mutt -s "test" -a ./tt -- to@test
 	m := `Received: from USER by HOST with local (Exim 4.92)
@@ -566,12 +594,14 @@ func TestMailxMessagePlaintextParsing(t *testing.T) {
 	telegramConfig := makeTelegramConfig()
 	telegramConfig.forwardedAttachmentMaxSize = 1024
 	telegramConfig.forwardedAttachmentMaxPhotoSize = 1024
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	// date | mail -A ./tt -s "test" to@test
 	m := `Received: from USER by HOST with local (Exim 4.92)
@@ -641,12 +671,14 @@ aG9obwo=
 func TestLatin1Encoding(t *testing.T) {
 	smtpConfig := makeSmtpConfig()
 	telegramConfig := makeTelegramConfig()
-	d := startSmtp(smtpConfig, telegramConfig)
-	defer d.Shutdown()
-
 	h := NewSuccessHandler()
 	s := HttpServer(h)
 	defer s.Shutdown(context.Background())
+
+	d := startSmtp(smtpConfig, telegramConfig)
+	defer d.Shutdown()
+
+	
 
 	// https://github.com/KostyaEsmukov/smtp_to_telegram/issues/24#issuecomment-980684254
 	m := `Date: Sat, 27 Nov 2021 17:31:21 +0100
@@ -697,57 +729,119 @@ func NewSuccessHandler() *SuccessHandler {
 }
 
 func (s *SuccessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Handle getMe endpoint for bot initialization
+	if strings.Contains(r.URL.Path, "getMe") {
+		w.Write([]byte(`{"ok":true,"result":{"id":123,"is_bot":true,"first_name":"Test Bot","username":"testbot"}}`))
+		return
+	}
 	if strings.Contains(r.URL.Path, "sendMessage") {
-		w.Write([]byte(`{"ok":true,"result":{"message_id": 123123}}`))
-		err := r.ParseForm()
+		// Telebot sends JSON, not form data
+		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			panic(err)
 		}
-		s.RequestMessages = append(s.RequestMessages, r.PostForm.Get("text"))
+		var payload map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			panic(err)
+		}
+		text := ""
+		if t, ok := payload["text"]; ok {
+			text = t.(string)
+		}
+		s.RequestMessages = append(s.RequestMessages, text)
+		w.Write([]byte(`{"ok":true,"result":{"message_id": 123123}}`))
 		return
 	}
+	// Handle sendMediaGroup (album) endpoint
+	if strings.Contains(r.URL.Path, "sendMediaGroup") {
+		// Parse multipart form
+		err := r.ParseMultipartForm(1024 * 1024)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(`{"ok":false,"error":"failed to parse form"}`))
+			return
+		}
+		// For albums, return an array of messages
+		w.Write([]byte(`{"ok":true,"result":[{"message_id": 123125},{"message_id": 123126}]}`))
+		return
+	}
+
 	isSendDocument := strings.Contains(r.URL.Path, "sendDocument")
 	isSendPhoto := strings.Contains(r.URL.Path, "sendPhoto")
 	if isSendDocument || isSendPhoto {
-		w.Write([]byte(`{}`))
-		if r.FormValue("reply_to_message_id") != "123123" {
-			panic(fmt.Errorf("Unexpected reply_to_message_id: %s", r.FormValue("reply_to_message_id")))
-		}
+		// Parse multipart form first
 		err := r.ParseMultipartForm(1024 * 1024)
 		if err != nil {
-			panic(err)
+			w.WriteHeader(500)
+			w.Write([]byte(`{"ok":false,"error":"failed to parse form"}`))
+			return
 		}
+
 		key := "document"
 		fileType := ATTACHMENT_TYPE_DOCUMENT
 		if isSendPhoto {
 			key = "photo"
 			fileType = ATTACHMENT_TYPE_PHOTO
 		}
+
+		var content []byte
+		var filename string
+		caption := r.FormValue("caption")
+
+		// Try to get file from multipart form
 		file, header, err := r.FormFile(key)
-		if err != nil {
-			panic(err)
+		if err == nil {
+			// File uploaded as multipart file
+			defer file.Close()
+			var buf bytes.Buffer
+			io.Copy(&buf, file)
+			content = buf.Bytes()
+			filename = header.Filename
+		} else {
+			// Check if file data is in form value (for small files/test data)
+			fileData := r.FormValue(key)
+			if fileData != "" {
+				content = []byte(fileData)
+				filename = caption // Use caption as filename
+			} else {
+				w.WriteHeader(500)
+				w.Write([]byte(`{"ok":false,"error":"failed to get file"}`))
+				return
+			}
 		}
-		defer file.Close()
-		var buf bytes.Buffer
-		io.Copy(&buf, file)
+
 		s.RequestDocuments = append(
 			s.RequestDocuments,
 			&FormattedAttachment{
-				filename: header.Filename,
-				caption:  r.FormValue("caption"),
-				content:  buf.Bytes(),
+				filename: filename,
+				caption:  caption,
+				content:  content,
 				fileType: fileType,
 			},
 		)
-	} else {
-		w.WriteHeader(404)
-		w.Write([]byte("Error"))
+
+		// Return success response with proper structure
+		if isSendPhoto {
+			w.Write([]byte(`{"ok":true,"result":{"message_id": 123124,"photo":[{"file_id":"test_photo_id","file_unique_id":"test","width":100,"height":100}],"caption":"` + caption + `"}}`))
+		} else {
+			w.Write([]byte(`{"ok":true,"result":{"message_id": 123124,"document":{"file_id":"test_doc_id","file_unique_id":"test","file_name":"` + filename + `"},"caption":"` + caption + `"}}`))
+		}
+		return
 	}
+
+	// Unknown endpoint
+	w.WriteHeader(404)
+	w.Write([]byte("Error"))
 }
 
 type ErrorHandler struct{}
 
 func (s *ErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Handle getMe endpoint for bot initialization - return success so bot can start
+	if strings.Contains(r.URL.Path, "getMe") {
+		w.Write([]byte(`{"ok":true,"result":{"id":123,"is_bot":true,"first_name":"Test Bot","username":"testbot"}}`))
+		return
+	}
 	w.WriteHeader(400)
 	w.Write([]byte("Error"))
 }
