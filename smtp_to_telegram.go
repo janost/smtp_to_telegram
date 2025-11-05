@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -51,16 +50,6 @@ type TelegramConfig struct {
 	forwardedAttachmentRespectErrors bool
 	messageLengthToSendAsFile        uint
 	messageCompact                   bool
-}
-
-type TelegramAPIMessageResult struct {
-	Ok     bool                `json:"ok"`
-	Result *TelegramAPIMessage `json:"result"`
-}
-
-type TelegramAPIMessage struct {
-	// https://core.telegram.org/bots/api#message
-	MessageId json.Number `json:"message_id"`
 }
 
 type FormattedEmail struct {
@@ -231,8 +220,41 @@ func main() {
 	}
 }
 
+func validateTelegramConfig(config *TelegramConfig) error {
+	if config.telegramBotToken == "" {
+		return errors.New("telegram bot token is required")
+	}
+	if config.telegramChatIds == "" {
+		return errors.New("telegram chat IDs are required")
+	}
+
+	// Validate chat IDs format
+	chatIds := strings.Split(config.telegramChatIds, ",")
+	if len(chatIds) == 0 {
+		return errors.New("at least one chat ID is required")
+	}
+
+	for _, chatIdStr := range chatIds {
+		chatIdStr = strings.TrimSpace(chatIdStr)
+		if chatIdStr == "" {
+			continue
+		}
+		_, err := strconv.ParseInt(chatIdStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid chat ID '%s': %w", chatIdStr, err)
+		}
+	}
+
+	return nil
+}
+
 func SmtpStart(
 	smtpConfig *SmtpConfig, telegramConfig *TelegramConfig) (guerrilla.Daemon, error) {
+
+	// Validate configuration
+	if err := validateTelegramConfig(telegramConfig); err != nil {
+		return guerrilla.Daemon{}, fmt.Errorf("invalid telegram configuration: %w", err)
+	}
 
 	cfg := &guerrilla.AppConfig{LogFile: log.OutputStdout.String()}
 
@@ -301,30 +323,57 @@ func SendEmailToTelegram(e *mail.Envelope,
 	if err != nil {
 		return err
 	}
-	sendAlbum := telegramConfig.messageCompact && message.attachmentsAreImages && len(message.attachments) >= 2 && len(message.attachments) <= 10
+	sendAlbum := telegramConfig.messageCompact && message.attachmentsAreImages && len(message.attachments) >= 2
 
 	album := tb.Album{}
 
 	if sendAlbum {
 		// Send images as album
-		// TODO: more than 10 images should be split up into multiple albums
+		// Telegram API supports max 10 media in an album
 		album = append(album,
 			// First item's caption will render as the message text
-			&tb.Photo{Caption: message.text, File: tb.FromReader(bytes.NewReader(message.attachments[0].content))},
+			&tb.Photo{
+				Caption: message.text,
+				File:    tb.FromReader(bytes.NewReader(message.attachments[0].content)),
+			},
 		)
-		for i := 1; i < len(message.attachments); i++ {
+		for i := 1; i < len(message.attachments) && i < 10; i++ {
 			album = append(album,
-				&tb.Photo{File: tb.FromReader(bytes.NewReader(message.attachments[i].content))},
+				&tb.Photo{
+					File: tb.FromReader(bytes.NewReader(message.attachments[i].content)),
+				},
 			)
 		}
 	}
 
 	for _, chatIdStr := range strings.Split(telegramConfig.telegramChatIds, ",") {
-		chatId, _ := strconv.ParseInt(chatIdStr, 10, 64)
+		chatIdStr = strings.TrimSpace(chatIdStr)
+		chatId, err := strconv.ParseInt(chatIdStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid chat ID '%s': %w", chatIdStr, err)
+		}
+		var sentMessage *tb.Message
 		if sendAlbum {
-			_, err := bot.SendAlbum(tb.ChatID(chatId), album)
+			msgs, err := bot.SendAlbum(tb.ChatID(chatId), album)
 			if err != nil {
 				return errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
+			}
+			if len(msgs) > 0 {
+				sentMessage = &msgs[0]
+			}
+
+			// Send remaining images (>10) as individual attachments
+			for i := 10; i < len(message.attachments); i++ {
+				attachment := message.attachments[i]
+				err = SendAttachmentToChat(attachment, chatId, telegramConfig, sentMessage)
+				if err != nil {
+					err = errors.New(SanitizeBotToken(err.Error(), telegramConfig.telegramBotToken))
+					if telegramConfig.forwardedAttachmentRespectErrors {
+						return err
+					} else {
+						logger.Errorf("Ignoring attachment sending error: %s", err)
+					}
+				}
 			}
 		} else {
 			sentMessage, err := SendMessageToChat(message, chatId, telegramConfig)
@@ -365,12 +414,23 @@ func SendAttachmentToChat(
 	sentMessage *tb.Message,
 ) error {
 	var tbAttachment interface{}
+	// Use FromReader to properly handle file uploads
+	// Note: telebot v3 doesn't expose filename setting directly, but uses the reader
+	file := tb.FromReader(bytes.NewReader(attachment.content))
+
 	if attachment.fileType == ATTACHMENT_TYPE_DOCUMENT {
-		tbAttachment = &tb.Document{Caption: attachment.caption, File: tb.FromReader(bytes.NewReader(attachment.content))}
+		tbAttachment = &tb.Document{
+			Caption:  attachment.caption,
+			File:     file,
+			FileName: attachment.filename,
+		}
 	} else if attachment.fileType == ATTACHMENT_TYPE_PHOTO {
-		tbAttachment = &tb.Photo{Caption: attachment.caption, File: tb.FromReader(bytes.NewReader(attachment.content))}
+		tbAttachment = &tb.Photo{
+			Caption: attachment.caption,
+			File:    file,
+		}
 	} else {
-		panic(fmt.Errorf("Unknown file type %d", attachment.fileType))
+		return fmt.Errorf("unknown file type %d", attachment.fileType)
 	}
 
 	_, err := bot.Send(tb.ChatID(chatId), tbAttachment, &tb.SendOptions{ReplyTo: sentMessage, DisableNotification: true})
@@ -595,12 +655,6 @@ func EscapeMultiLine(b []byte) string {
 
 func SanitizeBotToken(s string, botToken string) string {
 	return strings.Replace(s, botToken, "***", -1)
-}
-
-func panicIfError(err error) {
-	if err != nil {
-		panic(err)
-	}
 }
 
 func sigHandler(d guerrilla.Daemon) {
