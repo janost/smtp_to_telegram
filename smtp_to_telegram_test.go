@@ -146,8 +146,6 @@ func TestTelegramHttpError(t *testing.T) {
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
 
-	
-
 	err := smtp.SendMail(smtpConfig.smtpListen, nil, "from@test", []string{"to@test"}, []byte(`hi`))
 	assert.NotNil(t, err)
 }
@@ -161,8 +159,6 @@ func TestEncodedContent(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	b := []byte(
 		"Subject: =?UTF-8?B?8J+Yjg==?=\r\n" +
@@ -192,8 +188,6 @@ func TestHtmlAttachmentIsIgnored(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -225,8 +219,6 @@ func TestAttachmentsDetails(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -272,8 +264,6 @@ func TestAttachmentsSending(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -345,8 +335,6 @@ func TestLargeMessageAggressivelyTruncated(t *testing.T) {
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
 
-	
-
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
 	m.SetHeader("To", "to@test")
@@ -395,8 +383,6 @@ func TestLargeMessageProperlyTruncated(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -452,8 +438,6 @@ func TestLargeMessageWithAttachmentsProperlyTruncated(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", "from@test")
@@ -522,8 +506,6 @@ func TestMuttMessagePlaintextParsing(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	// date | mutt -s "test" -a ./tt -- to@test
 	m := `Received: from USER by HOST with local (Exim 4.92)
@@ -601,8 +583,6 @@ func TestMailxMessagePlaintextParsing(t *testing.T) {
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
 
-	
-
 	// date | mail -A ./tt -s "test" to@test
 	m := `Received: from USER by HOST with local (Exim 4.92)
 	(envelope-from <from@test>)
@@ -677,8 +657,6 @@ func TestLatin1Encoding(t *testing.T) {
 
 	d := startSmtp(smtpConfig, telegramConfig)
 	defer d.Shutdown()
-
-	
 
 	// https://github.com/KostyaEsmukov/smtp_to_telegram/issues/24#issuecomment-980684254
 	m := `Date: Sat, 27 Nov 2021 17:31:21 +0100

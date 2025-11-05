@@ -27,7 +27,7 @@ import (
 var (
 	Version string = "UNKNOWN_RELEASE"
 	logger  log.Logger
-	bot     tb.Bot
+	bot     *tb.Bot
 )
 
 const (
@@ -299,7 +299,7 @@ func SmtpStart(
 	if err != nil {
 		logger.Fatal(err)
 	}
-	bot = *teleBot
+	bot = teleBot
 
 	err = daemon.Start()
 	return daemon, err
