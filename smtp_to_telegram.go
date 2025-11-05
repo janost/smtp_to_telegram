@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -447,6 +448,44 @@ func SendAttachmentToChat(
 	return err
 }
 
+// htmlToText converts HTML to plain text without heavy dependencies
+// This simple implementation strips HTML tags and decodes basic entities
+func htmlToText(html string) string {
+	// Remove script and style elements
+	text := regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</\1>`).ReplaceAllString(html, "")
+
+	// Convert block elements to newlines
+	text = regexp.MustCompile(`(?i)</(div|p|br|tr|table|li|h[1-6])>`).ReplaceAllString(text, "\n")
+	text = regexp.MustCompile(`(?i)<(br|hr)[^>]*>`).ReplaceAllString(text, "\n")
+
+	// Remove all remaining HTML tags
+	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, "")
+
+	// Decode common HTML entities
+	replacements := map[string]string{
+		"&nbsp;":  " ",
+		"&lt;":    "<",
+		"&gt;":    ">",
+		"&amp;":   "&",
+		"&quot;":  "\"",
+		"&#39;":   "'",
+		"&apos;":  "'",
+		"&copy;":  "©",
+		"&reg;":   "®",
+		"&trade;": "™",
+	}
+	for entity, replacement := range replacements {
+		text = strings.ReplaceAll(text, entity, replacement)
+	}
+
+	// Clean up whitespace
+	text = regexp.MustCompile(`\n\s*\n\s*\n+`).ReplaceAllString(text, "\n\n")
+	text = regexp.MustCompile(`[ \t]+`).ReplaceAllString(text, " ")
+	text = regexp.MustCompile(`\n `).ReplaceAllString(text, "\n")
+
+	return strings.TrimSpace(text)
+}
+
 func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEmail, error) {
 	reader := e.NewReader()
 	env, err := enmime.ReadEnvelope(reader)
@@ -454,6 +493,12 @@ func FormatEmail(e *mail.Envelope, telegramConfig *TelegramConfig) (*FormattedEm
 		return nil, fmt.Errorf("%s\n\nError occurred during email parsing: %v", e, err)
 	}
 	text := env.Text
+
+	// If no plain text but HTML exists, convert it ourselves
+	// This avoids the heavy html2text/tablewriter dependency chain
+	if text == "" && env.HTML != "" {
+		text = htmlToText(env.HTML)
+	}
 
 	attachmentsDetails := []string{}
 	attachments := []*FormattedAttachment{}
